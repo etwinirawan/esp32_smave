@@ -10,6 +10,8 @@
 #include <LittleFS.h>
 #define SENSOR 27
 
+#define FORMAT_LITTLEFS_IF_FAILED true
+
 const char *ssid = "asli";
 const char *password = "123412345";
 const char *serverAddress = "https://0764m0hj-8080.asse.devtunnels.ms";
@@ -35,6 +37,10 @@ float totalMilliLitres;
 // Simpan nilai-nilai sebelumnya
 float previousFlowRate = 0.0;
 float previousTotalMilliLitres = 0.0;
+
+// Inisialisasi waktu terakhir penyimpanan
+unsigned long lastSaveTime = 0;  
+
 
 WiFiUDP ntpUDP;
 //////////////waktu(wib)
@@ -126,9 +132,19 @@ void loop() {
     dataSent = true;  // Set flag bahwa data telah dikirim
   }
 
-  Serial.println(dataSent);
+  // Serial.println(dataSent);
   if (Serial.available() > 0) {
     String data = Serial.readString();
+    if (data.equals("debit")) {
+      Serial.print("Debit saat ini : ");
+      readFile(LittleFS, "/debit.txt");  // Read the complete file
+      Serial.println("");
+    }
+    if (data.equals("volume")) {
+      Serial.print("Volume saat ini : ");
+      readFile(LittleFS, "/volume.txt");  // Read the complete file
+      Serial.println("");
+    }
     if (data.equals("kirim")) {
       sendToNodeJS();
     }
@@ -141,12 +157,6 @@ void loop() {
   }
   if (Serial.available() > 0) {
     String data = Serial.readString();
-    if (data.equals("debit")) {
-      readFile(LittleFS, "/debit.txt");  // Read the complete file
-    }
-    if (data.equals("volume")) {
-      readFile(LittleFS, "/volume.txt");  // Read the complete file
-    }
   }
   // Serial.println(timeClient.getMinutes() % 5 == 0);
   delay(1000);  // Tunggu 1 detik sebelum membaca waktu lagi
@@ -255,15 +265,21 @@ void waterFlow() {
     Serial.print("mL / ");
     Serial.print(totalMilliLitres / 1000);
     Serial.println("L");
-    // Check if data is different from previous data before saving to LittleFS
-    if (flowRate != previousFlowRate || totalMilliLitres != previousTotalMilliLitres) {
-      // Simpan data ke LittleFS
-      writeFile(LittleFS, "/debit.txt", String(flowRate));
-      writeFile(LittleFS, "/volume.txt", String(totalMilliLitres / 1000));
 
-      // Update nilai-nilai sebelumnya
-      previousFlowRate = flowRate;
-      previousTotalMilliLitres = totalMilliLitres;
+    // Check if 10 seconds have passed since the last save
+    if (currentMillis - lastSaveTime > 10000) {
+      // Check if data is different from previous data before saving to LittleFS
+      if (flowRate != previousFlowRate || totalMilliLitres != previousTotalMilliLitres) {
+        // Simpan data ke LittleFS
+        writeFile(LittleFS, "/debit.txt", String(flowRate).c_str());
+        writeFile(LittleFS, "/volume.txt", String(totalMilliLitres / 1000).c_str());
+
+        // Update nilai-nilai sebelumnya
+        previousFlowRate = flowRate;
+        previousTotalMilliLitres = totalMilliLitres;
+        // Update waktu terakhir penyimpanan
+        lastSaveTime = currentMillis;
+      }
     }
   }
 }
