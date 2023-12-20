@@ -9,6 +9,8 @@
 #include "FS.h"
 #include <LittleFS.h>
 #define SENSOR 27
+#define HARDRESET 2
+
 
 #define FORMAT_LITTLEFS_IF_FAILED true
 
@@ -22,27 +24,26 @@ const int serverPort = 8080;
 String valve = "";
 String reqToken = "";
 boolean dataSent = true;
+// double roundedFlowRate = round(static_cast<double>(flowRate) * 100.0) / 100.0;
 
-int countSendToServer = 0;
+int countSendToServer;
 
 /// WATERFLOW
 long currentMillis = 0;
 long previousMillis = 0;
 int interval = 1000;
 boolean ledState = LOW;
-float calibrationFactor = 4.5;
-volatile byte pulseCount;
+float calibrationFactor = 596.0;
+volatile int pulseCount;
 byte pulse1Sec = 0;
 float flowRate;
 unsigned int flowMilliLitres;
-// unsigned long totalMilliLitres;
-float totalMilliLitres;
+// unsigned long volume;
 
 int volume;
 
 // Simpan nilai-nilai sebelumnya
-float previousFlowRate = 0.0;
-float previousTotalMilliLitres = 0.0;
+int previousVolume;
 
 // Inisialisasi waktu terakhir penyimpanan
 unsigned long lastSaveTime = 0;
@@ -91,7 +92,9 @@ void setup() {
   Serial.begin(115200);
 
   pinMode(SENSOR, INPUT_PULLUP);
+  // pinMode(HARDRESET, OUTPUT);
   attachInterrupt(digitalPinToInterrupt(SENSOR), pulseCounter, FALLING);
+  sei();
 
   // Menghubungkan ke WiFi
   WiFi.begin(ssid, password);
@@ -113,26 +116,7 @@ void setup() {
   // baca ref
   bacaRef();
 
-  // volume = fs
-  // volume = readFile(LittleFS, "/volume.txt");
-  // Buka file "/volume.txt" untuk dibaca
-  File file = LittleFS.open("/volume.txt", "r");
-
-  // Periksa apakah file berhasil dibuka
-  if (file) {
-    // Baca nilai dari file dan konversi ke integer
-    volume = file.readString().toInt();
-
-    // Tampilkan nilai di Serial Monitor (opsional)
-    Serial.println(volume);
-
-    // Tutup file setelah selesai membaca
-    file.close();
-  } else {
-    // Gagal membuka file, lakukan sesuatu di sini
-    Serial.println("Gagal membuka file");
-  }
-
+  bacaFs();
 
   delay(1000);
 }
@@ -141,20 +125,21 @@ void loop() {
   // Memperbarui waktu dari server NTP
   timeClient.update();
 
-  if (valve == "on") {
+  if (valve.equals("on")) {
     waterFlow();
-  }
-
-  // Mengirim data jika waktu saat ini adalah kelipatan 5 menit dan data belum dikirim
-  if (timeClient.getMinutes() % 2 == 0) {
-    if (dataSent == true) {
-      reqTokenFromServer();
-      sendToServer();
-      dataSent = false;  // Set flag bahwa data telah dikirim
-      Serial.println("Send data to server");
+    // Mengirim data jika waktu saat ini adalah kelipatan 5 menit dan data belum dikirim
+    if (timeClient.getMinutes() % 5 == 0) {
+      if (dataSent == true) {
+        reqTokenFromServer();
+        sendToServer();
+        dataSent = false;  // Set flag bahwa data telah dikirim
+        Serial.println("Send data to server");
+      }
+    } else {
+      dataSent = true;  // Set flag bahwa data telah dikirim
     }
-  } else {
-    dataSent = true;  // Set flag bahwa data telah dikirim
+  }else{
+    bacaRef();
   }
 
   // Serial.println(dataSent);
@@ -229,45 +214,41 @@ void bacaRef() {
 void waterFlow() {
   currentMillis = millis();
   if (currentMillis - previousMillis > interval) {
-    pulse1Sec = pulseCount;
+    flowRate = (float)pulseCount / calibrationFactor;
+    // flowRate = (volume * 1000.0 * 33.93) / 60.0;
+
     pulseCount = 0;
 
-    flowRate = ((1000.0 / (millis() - previousMillis)) * pulse1Sec) / calibrationFactor;
-    previousMillis = millis();
-
-    // convert to millilitres.
-    flowMilliLitres = (flowRate / 60) * 1000;
-
-    // Add the millilitres passed in this second to the cumulative total
-    totalMilliLitres += flowMilliLitres;
-    volume += totalMilliLitres / 1000;
+    volume += flowRate / 60;
+    // flowMilliLitres = 0;
+    // flowRate = 0;
     // Print the flow rate for this second in litres / minute
     Serial.print("Flow rate: ");
-    Serial.print(int(flowRate));  // Print the integer part of the variable
+    // Serial.print(int(flowRate));  // Print the integer part of the variable
+    Serial.print(flowRate);  // Print the integer part of the variable
     Serial.print("L/min");
     Serial.print("\t");  // Print tab space
 
     // Print the cumulative total of litres flowed since starting
     Serial.print("Output Liquid Quantity: ");
-    Serial.print(totalMilliLitres);
-    Serial.print("mL / ");
     Serial.print(volume);
     Serial.println("L");
 
     // Check if 10 seconds have passed since the last save
     if (currentMillis - lastSaveTime > 10000) {
       // Check if data is different from previous data before saving to LittleFS
-      if (totalMilliLitres != previousTotalMilliLitres) {
+      if (volume != previousVolume) {
         // Simpan data ke LittleFS
         writeFile(LittleFS, "/volume.txt", String(volume).c_str());
 
         // Update nilai-nilai sebelumnya
-        previousTotalMilliLitres = totalMilliLitres;
+        previousVolume = volume;
 
         // Update waktu terakhir penyimpanan
         lastSaveTime = currentMillis;
       }
     }
+    previousMillis = millis();
   }
 }
 
@@ -321,7 +302,7 @@ void sendToServer() {
 
   doc["token"] = reqToken;
   doc["volume"] = volume;
-  doc["debit"] = int(flowRate);
+  doc["debit"] = flowRate;
 
   // Mengonversi objek JSON ke string
   String jsonString = "";
@@ -349,13 +330,19 @@ void sendToServer() {
     Serial.print("Keterangan : ");
     Serial.println(msg);
     if (msg.equals("success")) {
+      //reset
+      writeFile(LittleFS, "/volume.txt", "0");
+      bacaFs();
       bacaRef();
-      volume = 0;
     } else {
       if (countSendToServer > 4) {
-        //HARDRESETTTTT
+        //HARDRESET
+        // digitalWrite(HARDRESET, HIGH);
+        
       }
       countSendToServer++;
+      Serial.print("Loop ke - ");
+      Serial.println(countSendToServer);
       sendToServer();
     }
   } else {
@@ -369,4 +356,23 @@ void sendToServer() {
     }
   }
   http.end();
+}
+
+void bacaFs() {
+  File file = LittleFS.open("/volume.txt", "r");
+
+  // Periksa apakah file berhasil dibuka
+  if (file) {
+    // Baca nilai dari file dan konversi ke integer
+    volume = file.readString().toInt();
+
+    // Tampilkan nilai di Serial Monitor (opsional)
+    Serial.println(volume);
+
+    // Tutup file setelah selesai membaca
+    file.close();
+  } else {
+    // Gagal membuka file, lakukan sesuatu di sini
+    Serial.println("Gagal membuka file");
+  }
 }
